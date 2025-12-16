@@ -51,15 +51,16 @@ steps:
         # Loop through all 3 images and sign them
         for IMAGE in springboot-app fastapi-app react-app; do
           
-          echo "Signing $IMAGE..."
+          # Use $$IMAGE so Cloud Build ignores it
+          echo "Signing $$IMAGE..."
           
-          # Get the full Digest (SHA256)
-          DIGEST=$(gcloud container images describe us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/${IMAGE}:$SHORT_SHA --format='get(image_summary.digest)')
+          # Get the full Digest (SHA256). Note $$DIGEST and $${IMAGE}
+          DIGEST=$$(gcloud container images describe us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/$${IMAGE}:$SHORT_SHA --format='get(image_summary.digest)')
           
           # Sign the Digest
           gcloud beta container binauthz attestations sign-and-create \
               --project=$PROJECT_ID \
-              --artifact-url="us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/${IMAGE}@${DIGEST}" \
+              --artifact-url="us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/$${IMAGE}@$${DIGEST}" \
               --attestor=production-attestor \
               --attestor-project=$PROJECT_ID \
               --keyversion-project=$PROJECT_ID \
