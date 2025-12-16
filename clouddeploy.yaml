@@ -1,0 +1,18 @@
+apiVersion: deploy.cloud.google.com/v1
+kind: DeliveryPipeline
+metadata:
+  name: microservices-pipeline
+description: "Pipeline for Java, Python, and React apps"
+serialPipeline:
+  stages:
+  - targetId: production
+    profiles: []
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: production
+description: "Production GKE Cluster"
+gke:
+  # This points to your specific GKE cluster created earlier
+  cluster: projects/sampleprojecttesting-478502/locations/us-central1-a/clusters/my-cluster

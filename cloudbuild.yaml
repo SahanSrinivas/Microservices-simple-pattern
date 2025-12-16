@@ -47,14 +47,16 @@ steps:
     args:
       - '-c'
       - |
+        set -e # Fail immediately if any command errors out
         echo "Starting Signing Process..."
+        
         # Loop through all 3 images and sign them
         for IMAGE in springboot-app fastapi-app react-app; do
           
-          # Use $$IMAGE so Cloud Build ignores it
+          # Use $$ to escape the variable for Cloud Build
           echo "Signing $$IMAGE..."
           
-          # Get the full Digest (SHA256). Note $$DIGEST and $${IMAGE}
+          # Get the full Digest (SHA256)
           DIGEST=$$(gcloud container images describe us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/$${IMAGE}:$SHORT_SHA --format='get(image_summary.digest)')
           
           # Sign the Digest
@@ -73,28 +75,22 @@ steps:
     waitFor: ['push-java', 'push-python', 'push-react']
 
   # ==========================================
-  # 5. Generate & Deploy Manifests
+  # 5. Create Release in Cloud Deploy (CD)
   # ==========================================
-  - name: 'gcr.io/cloud-builders/gcloud'
-    id: 'deploy-gke'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'trigger-deploy'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Install envsubst for replacing variables
-        apt-get update && apt-get install -y gettext
-
-        echo "Updating Deployment YAMLs with new image tags..."
-        
-        # Replace placeholders in YAML with the new signed image tags
-        # We are using 'sed' to update the image lines directly
-        sed -i "s|springboot-app:v1|springboot-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
-        sed -i "s|fastapi-app:v1|fastapi-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
-        sed -i "s|react-app:v1|react-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
-
-        echo "Deploying to GKE..."
-        gcloud container clusters get-credentials my-cluster --zone us-central1-a --project $PROJECT_ID
-        kubectl apply -f k8s/gcp-deployments.yaml
+        echo "Creating Cloud Deploy Release..."
+        gcloud deploy releases create release-$SHORT_SHA \
+          --project=$PROJECT_ID \
+          --region=us-central1 \
+          --delivery-pipeline=microservices-pipeline \
+          --images=springboot-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA \
+          --images=fastapi-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA \
+          --images=react-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA
     waitFor: ['sign-images']
 
 images:

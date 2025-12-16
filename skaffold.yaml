@@ -1,0 +1,9 @@
+apiVersion: skaffold/v4beta7
+kind: Config
+metadata:
+  name: microservices-app
+manifests:
+  rawYaml:
+  - k8s/gcp-deployments.yaml
+deploy:
+  kubectl: {}
