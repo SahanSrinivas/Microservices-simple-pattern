@@ -1,0 +1,102 @@
+steps:
+  # ==========================================
+  # 1. Build & Push Spring Boot (Java)
+  # ==========================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-java'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA', '.']
+    dir: 'backend-java'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-java'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA']
+    waitFor: ['build-java']
+
+  # ==========================================
+  # 2. Build & Push FastAPI (Python)
+  # ==========================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-python'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA', '.']
+    dir: 'backend-python'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-python'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA']
+    waitFor: ['build-python']
+
+  # ==========================================
+  # 3. Build & Push React (Frontend)
+  # ==========================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-react'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA', '.']
+    dir: 'frontend-react'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-react'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA']
+    waitFor: ['build-react']
+
+  # ==========================================
+  # 4. Binary Attestation (SIGNING THE IMAGES)
+  # ==========================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'sign-images'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Starting Signing Process..."
+        # Loop through all 3 images and sign them
+        for IMAGE in springboot-app fastapi-app react-app; do
+          
+          echo "Signing $IMAGE..."
+          
+          # Get the full Digest (SHA256)
+          DIGEST=$(gcloud container images describe us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/${IMAGE}:$SHORT_SHA --format='get(image_summary.digest)')
+          
+          # Sign the Digest
+          gcloud beta container binauthz attestations sign-and-create \
+              --project=$PROJECT_ID \
+              --artifact-url="us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/${IMAGE}@${DIGEST}" \
+              --attestor=production-attestor \
+              --attestor-project=$PROJECT_ID \
+              --keyversion-project=$PROJECT_ID \
+              --keyversion-location=us-central1 \
+              --keyversion-keyring=binauthz-keys \
+              --keyversion-key=codelab-signer \
+              --keyversion=1
+        done
+        echo "All images signed successfully."
+    waitFor: ['push-java', 'push-python', 'push-react']
+
+  # ==========================================
+  # 5. Generate & Deploy Manifests
+  # ==========================================
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'deploy-gke'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Install envsubst for replacing variables
+        apt-get update && apt-get install -y gettext
+
+        echo "Updating Deployment YAMLs with new image tags..."
+        
+        # Replace placeholders in YAML with the new signed image tags
+        # We are using 'sed' to update the image lines directly
+        sed -i "s|springboot-app:v1|springboot-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
+        sed -i "s|fastapi-app:v1|fastapi-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
+        sed -i "s|react-app:v1|react-app:$SHORT_SHA|g" k8s/gcp-deployments.yaml
+
+        echo "Deploying to GKE..."
+        gcloud container clusters get-credentials my-cluster --zone us-central1-a --project $PROJECT_ID
+        kubectl apply -f k8s/gcp-deployments.yaml
+    waitFor: ['sign-images']
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA'
