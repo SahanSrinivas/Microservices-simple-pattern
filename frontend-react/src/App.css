@@ -1,0 +1,11 @@
+.App { text-align: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+.App-header { background-color: #282c34; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; }
+.container { display: flex; gap: 40px; margin-top: 30px; flex-wrap: wrap; justify-content: center; }
+.card { background: #3b404e; padding: 25px; border-radius: 12px; width: 300px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-top: 5px solid #ccc; }
+.java-card { border-top-color: #6db33f; }
+.python-card { border-top-color: #3776ab; }
+button { padding: 12px 24px; font-size: 16px; border: none; border-radius: 6px; cursor: pointer; transition: opacity 0.3s; color: white; font-weight: bold; width: 100%; margin-top: 15px; }
+.btn-java { background-color: #6db33f; }
+.btn-python { background-color: #3776ab; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+.response-area { margin-top: 20px; min-height: 30px; padding: 10px; background: #21252b; border-radius: 4px; font-family: monospace; color: #abb2bf; }
