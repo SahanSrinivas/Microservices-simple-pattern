@@ -14,7 +14,7 @@ app.add_middleware(
 
 @app.get("/hello")
 def say_hello():
-    return {"message": "Hello from FastAPI!"}
+    return {"message": "Hello from FastAPI!, this is simple code for testing"}
 
 @app.get("/health")
 def health_check():
