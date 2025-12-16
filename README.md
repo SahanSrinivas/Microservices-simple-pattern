@@ -268,3 +268,299 @@ Plaintext
 
 &nbsp;   └── gcp-deployments.yaml
 
+
+
+4\. Conclusion
+
+
+
+Phase 1: Manual Build \& Infrastructure Setup
+
+1\. Create the Artifact Registry
+
+
+
+PowerShell
+
+
+
+gcloud artifacts repositories create microservices-repo `
+
+&nbsp;   --repository-format=docker `
+
+&nbsp;   --location=us-central1 `
+
+&nbsp;   --description="Docker repo for microservices"
+
+2\. Manual Builds (First time setup)
+
+
+
+PowerShell
+
+
+
+\# Spring Boot
+
+cd backend-java
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/springboot-app:v1 .
+
+
+
+\# FastAPI
+
+cd ../backend-python
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/fastapi-app:v1 .
+
+
+
+\# React
+
+cd ../frontend-react
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/react-app:v1 .
+
+3\. Create GKE Cluster
+
+
+
+PowerShell
+
+
+
+gcloud container clusters create my-cluster `
+
+&nbsp;   --zone us-central1-a `
+
+&nbsp;   --project sampleprojecttesting-478502 `
+
+&nbsp;   --machine-type e2-medium `
+
+&nbsp;   --num-nodes 3 `
+
+&nbsp;   --enable-autoscaling --min-nodes 3 --max-nodes 5 `
+
+&nbsp;   --scopes "https://www.googleapis.com/auth/cloud-platform"
+
+4\. Reserve Static IP
+
+
+
+PowerShell
+
+
+
+gcloud compute addresses create gcpstudycircle-ip --global
+
+5\. Connect to Cluster
+
+
+
+PowerShell
+
+
+
+gcloud container clusters get-credentials my-cluster --zone us-central1-a --project sampleprojecttesting-478502
+
+Phase 2: Security Infrastructure (Binary Authorization)
+
+1\. Enable APIs
+
+
+
+PowerShell
+
+
+
+gcloud services enable binaryauthorization.googleapis.com containeranalysis.googleapis.com cloudkms.googleapis.com clouddeploy.googleapis.com
+
+2\. Create Signing Keys (KMS)
+
+
+
+PowerShell
+
+
+
+gcloud kms keyrings create binauthz-keys --location us-central1
+
+
+
+gcloud kms keys create codelab-signer `
+
+&nbsp;   --keyring binauthz-keys `
+
+&nbsp;   --location us-central1 `
+
+&nbsp;   --purpose asymmetric-signing `
+
+&nbsp;   --default-algorithm rsa-sign-pkcs1-4096-sha512
+
+3\. Create Attestation Note (Using curl)
+
+
+
+Bash
+
+
+
+cat > note\_payload.json << EOM
+
+{
+
+&nbsp; "name": "projects/sampleprojecttesting-478502/notes/production-deployer",
+
+&nbsp; "attestation": {
+
+&nbsp;   "hint": {
+
+&nbsp;     "human\_readable\_name": "Production Deployer Note"
+
+&nbsp;   }
+
+&nbsp; }
+
+}
+
+EOM
+
+
+
+curl -X POST \\
+
+&nbsp;   -H "Content-Type: application/json" \\
+
+&nbsp;   -H "Authorization: Bearer $(gcloud auth print-access-token)"  \\
+
+&nbsp;   --data-binary @note\_payload.json  \\
+
+&nbsp;   "https://containeranalysis.googleapis.com/v1/projects/sampleprojecttesting-478502/notes/?noteId=production-deployer"
+
+4\. Create Attestor
+
+
+
+PowerShell
+
+
+
+gcloud container binauthz attestors create production-attestor `
+
+&nbsp;   --project sampleprojecttesting-478502 `
+
+&nbsp;   --attestation-authority-note production-deployer `
+
+&nbsp;   --attestation-authority-note-project sampleprojecttesting-478502
+
+
+
+gcloud container binauthz attestors public-keys add `
+
+&nbsp;   --attestor production-attestor `
+
+&nbsp;   --project sampleprojecttesting-478502 `
+
+&nbsp;   --keyversion-project sampleprojecttesting-478502 `
+
+&nbsp;   --keyversion-location us-central1 `
+
+&nbsp;   --keyversion-keyring binauthz-keys `
+
+&nbsp;   --keyversion-key codelab-signer `
+
+&nbsp;   --keyversion 1
+
+5\. Grant IAM Permissions (The Corrected Version)
+
+
+
+PowerShell
+
+
+
+export COMPUTE\_EMAIL="604444741006-compute@developer.gserviceaccount.com"
+
+
+
+\# Permission to Sign
+
+gcloud kms keys add-iam-policy-binding codelab-signer `
+
+&nbsp;   --location us-central1 `
+
+&nbsp;   --keyring binauthz-keys `
+
+&nbsp;   --member="serviceAccount:$COMPUTE\_EMAIL" \\
+
+&nbsp;   --role="roles/cloudkms.signerVerifier" \\
+
+&nbsp;   --project sampleprojecttesting-478502
+
+
+
+\# Permission to View Attestor
+
+gcloud container binauthz attestors add-iam-policy-binding production-attestor `
+
+&nbsp;   --project sampleprojecttesting-478502 `
+
+&nbsp;   --member="serviceAccount:$COMPUTE\_EMAIL" \\
+
+&nbsp;   --role="roles/binaryauthorization.attestorsViewer"
+
+
+
+\# Permission to Attach Notes
+
+gcloud projects add-iam-policy-binding sampleprojecttesting-478502 `
+
+&nbsp;   --member="serviceAccount:$COMPUTE\_EMAIL" \\
+
+&nbsp;   --role="roles/containeranalysis.notes.attacher"
+
+Phase 3: Continuous Deployment (Cloud Deploy)
+
+1\. Create Configuration Files
+
+
+
+Created skaffold.yaml
+
+
+
+Created clouddeploy.yaml
+
+
+
+Updated cloudbuild.yaml (with $$ escaping and CLOUD\_LOGGING\_ONLY)
+
+
+
+2\. Register Pipeline
+
+
+
+PowerShell
+
+
+
+gcloud deploy apply --file=clouddeploy.yaml --region=us-central1 --project=sampleprojecttesting-478502
+
+Phase 4: The Final Trigger
+
+1\. Push to GitHub
+
+
+
+PowerShell
+
+
+
+git add .
+
+git commit -m "Finalized CI/CD pipeline"
+
+git push origin main
+

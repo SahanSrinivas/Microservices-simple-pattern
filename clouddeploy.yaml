@@ -2,17 +2,33 @@ apiVersion: deploy.cloud.google.com/v1
 kind: DeliveryPipeline
 metadata:
   name: microservices-pipeline
-description: "Pipeline for Java, Python, and React apps"
+description: "Pipeline with Staging and Production"
 serialPipeline:
   stages:
-  - targetId: production
+  - targetId: staging      # First, we deploy here
+    profiles: []
+  - targetId: production   # Then, we promote to here
     profiles: []
 ---
+# ===========================
+# Target 1: Staging (Simulated)
+# ===========================
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: staging
+description: "Staging Environment (Simulated on same cluster)"
+gke:
+  cluster: projects/sampleprojecttesting-478502/locations/us-central1-a/clusters/my-cluster
+
+---
+# ===========================
+# Target 2: Production
+# ===========================
 apiVersion: deploy.cloud.google.com/v1
 kind: Target
 metadata:
   name: production
-description: "Production GKE Cluster"
+description: "Production Environment"
 gke:
-  # This points to your specific GKE cluster created earlier
   cluster: projects/sampleprojecttesting-478502/locations/us-central1-a/clusters/my-cluster
