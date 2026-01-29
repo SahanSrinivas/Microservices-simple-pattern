@@ -404,6 +404,19 @@ gcloud container binauthz policy import binauthz-policy.yaml
 
 ### 3.1 Create Cloud Deploy Pipeline Configuration
 
+> **Purpose**: Defines the deployment pipeline stages and target environments for Cloud Deploy.
+
+**What is Cloud Deploy?**
+- Google's managed continuous delivery service
+- Orchestrates deployments to GKE clusters
+- Provides progressive delivery (though we use single-stage for simplicity)
+- Handles rollback and release management
+
+**What does this file do?**
+- **DeliveryPipeline**: Creates a pipeline named "microservices-pipeline" with one stage (prod)
+- **Target**: Defines where to deploy (our GKE cluster in us-central1-a)
+- Cloud Deploy will use this to know which cluster receives the deployment
+
 **Create `clouddeploy.yaml` in your project root:**
 ```yaml
 apiVersion: deploy.cloud.google.com/v1
@@ -412,18 +425,38 @@ metadata:
   name: microservices-pipeline
 serialPipeline:
   stages:
-  - targetId: prod
-    profiles: []
+  - targetId: prod                      # References the "prod" target below
+    profiles: []                        # Can specify different configs per stage
 ---
 apiVersion: deploy.cloud.google.com/v1
 kind: Target
 metadata:
-  name: prod
+  name: prod                            # Target name referenced above
 gke:
   cluster: projects/sampleprojecttesting-478502/locations/us-central1-a/clusters/my-cluster
+  # This points Cloud Deploy to your GKE cluster
 ```
 
 ### 3.2 Create Skaffold Configuration
+
+> **Purpose**: Defines how to build container images and render Kubernetes manifests.
+
+**What is Skaffold?**
+- Build and deployment automation tool for Kubernetes
+- Cloud Deploy uses Skaffold under the hood to render manifests
+- Handles image tag substitution in Kubernetes YAML files
+- Maps image names to actual registry paths
+
+**What does this file do?**
+- **build.artifacts**: Lists all 3 container images and their build contexts
+- **manifests**: Points to the Kubernetes YAML file to deploy
+- **deploy**: Specifies deployment method (kubectl in our case)
+- During deployment, Skaffold replaces image placeholders with actual tagged images
+
+**Key Concept**: When Cloud Deploy creates a release, it uses Skaffold to:
+1. Read your K8s manifests (gcp-deployments.yaml)
+2. Replace image names with the specific SHA-tagged versions
+3. Apply the updated manifests to your cluster
 
 **Create `skaffold.yaml` in your project root:**
 ```yaml
@@ -434,24 +467,74 @@ metadata:
 build:
   artifacts:
   - image: us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/springboot-app
-    context: backend-java
+    context: backend-java              # Build context directory
   - image: us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/fastapi-app
     context: backend-python
   - image: us-central1-docker.pkg.dev/sampleprojecttesting-478502/microservices-repo/react-app
     context: frontend-react
 manifests:
   rawYaml:
-  - k8s/gcp-deployments.yaml
+  - k8s/gcp-deployments.yaml           # Kubernetes manifests to deploy
 deploy:
-  kubectl: {}
+  kubectl: {}                          # Use kubectl to apply manifests
+```
+
+**Example of Image Tag Substitution**:
+```yaml
+# In your K8s manifest (before):
+image: us-central1-docker.pkg.dev/.../springboot-app
+
+# After Skaffold rendering (during deployment):
+image: us-central1-docker.pkg.dev/.../springboot-app:a1b2c3d
 ```
 
 ### 3.3 Create Cloud Build Configuration
 
+> **Purpose**: Defines the complete CI/CD workflow triggered on every git push.
+
+**What is Cloud Build?**
+- Google's serverless CI/CD platform
+- Executes build steps in containers
+- Automatically triggered by GitHub commits
+- Handles building, testing, signing, and deploying
+
+**What does this file do?**
+This is your **complete automated pipeline**. When you push to GitHub, Cloud Build:
+
+1. **Builds** → Compiles/packages all 3 services into Docker images
+2. **Pushes** → Uploads images to Artifact Registry with SHA tag
+3. **Attests** → Cryptographically signs images with Binary Authorization
+4. **Deploys** → Creates a Cloud Deploy release which triggers Skaffold
+
+**Pipeline Flow**:
+```
+GitHub Push → Cloud Build Trigger → Build Images → Push to Registry 
+→ Sign with KMS → Create Cloud Deploy Release → Skaffold Renders Manifests 
+→ Deploy to GKE
+```
+
+**Key Components**:
+- **steps**: Sequential build operations (10 steps total)
+- **waitFor**: Controls execution order (parallel where possible)
+- **substitutions**: Variables like $PROJECT_ID, $SHORT_SHA
+- **options**: Build machine type, logging preferences
+
 **Create `cloudbuild.yaml` in your project root:**
 ```yaml
+# ==============================================================================
+# CLOUD BUILD PIPELINE - Automated CI/CD Workflow
+# ==============================================================================
+# Trigger: GitHub push to main branch
+# Duration: ~5-8 minutes
+# Output: Deployed services on GKE with signed, attested images
+# ==============================================================================
+
 steps:
-  # Build Spring Boot
+  # =============================================================================
+  # PHASE 1: BUILD - Create Docker images for all 3 services
+  # =============================================================================
+  # These steps run in parallel (no waitFor dependencies)
+  
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
@@ -459,8 +542,9 @@ steps:
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA'
       - './backend-java'
     id: 'build-springboot'
+    # Builds Java app using Dockerfile in backend-java/
+    # Tags image with git commit SHA for traceability
 
-  # Build FastAPI
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
@@ -468,8 +552,8 @@ steps:
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA'
       - './backend-python'
     id: 'build-fastapi'
+    # Builds Python app using Dockerfile in backend-python/
 
-  # Build React
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
@@ -477,14 +561,21 @@ steps:
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA'
       - './frontend-react'
     id: 'build-react'
+    # Builds React app, includes Nginx for serving static files
 
-  # Push all images
+  # =============================================================================
+  # PHASE 2: PUSH - Upload images to Artifact Registry
+  # =============================================================================
+  # These steps wait for their respective builds to complete
+  
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA'
     id: 'push-springboot'
     waitFor: ['build-springboot']
+    # Pushes Spring Boot image to registry
+    # waitFor ensures build completes first
 
   - name: 'gcr.io/cloud-builders/docker'
     args:
@@ -500,7 +591,12 @@ steps:
     id: 'push-react'
     waitFor: ['build-react']
 
-  # Sign Spring Boot image
+  # =============================================================================
+  # PHASE 3: ATTEST - Cryptographically sign images (Binary Authorization)
+  # =============================================================================
+  # CRITICAL: These steps require service account permissions (see Phase 2.5)
+  # Creates attestations proving images passed security checks
+  
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -518,8 +614,10 @@ steps:
           --keyversion="1"
     id: 'attest-springboot'
     waitFor: ['push-springboot']
+    # Signs Spring Boot image with KMS key
+    # Creates attestation stored in Container Analysis API
+    # GKE will verify this signature before deploying
 
-  # Sign FastAPI image
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -538,7 +636,6 @@ steps:
     id: 'attest-fastapi'
     waitFor: ['push-fastapi']
 
-  # Sign React image
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -557,7 +654,12 @@ steps:
     id: 'attest-react'
     waitFor: ['push-react']
 
-  # Create Cloud Deploy release
+  # =============================================================================
+  # PHASE 4: DEPLOY - Create Cloud Deploy release
+  # =============================================================================
+  # This triggers the deployment process:
+  # Cloud Deploy → Skaffold → Renders manifests → kubectl apply → GKE
+  
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -570,13 +672,181 @@ steps:
           --images=springboot-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/springboot-app:$SHORT_SHA,fastapi-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/fastapi-app:$SHORT_SHA,react-app=us-central1-docker.pkg.dev/$PROJECT_ID/microservices-repo/react-app:$SHORT_SHA
     id: 'create-release'
     waitFor: ['attest-springboot', 'attest-fastapi', 'attest-react']
+    # Creates a new Cloud Deploy release
+    # Passes all 3 signed image URLs
+    # Cloud Deploy will use Skaffold to deploy to GKE
 
+# ==============================================================================
+# BUILD OPTIONS
+# ==============================================================================
 options:
-  logging: CLOUD_LOGGING_ONLY
-  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY        # Send logs only to Cloud Logging (not console)
+  machineType: 'E2_HIGHCPU_8'        # Use larger machine for faster builds
 
-timeout: '1800s'
+timeout: '1800s'                     # 30 minute timeout for entire build
 ```
+
+**Understanding the Build Flow**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Git Push to GitHub                                              │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Cloud Build Trigger Activates                                   │
+│  Clones repository to Cloud Build workspace                      │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌───────────────────┼───────────────────┐
+        ↓                   ↓                   ↓
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Build Java   │   │ Build Python │   │ Build React  │
+│ (2-3 min)    │   │ (1-2 min)    │   │ (2-3 min)    │
+└──────────────┘   └──────────────┘   └──────────────┘
+        ↓                   ↓                   ↓
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Push to      │   │ Push to      │   │ Push to      │
+│ Registry     │   │ Registry     │   │ Registry     │
+└──────────────┘   └──────────────┘   └──────────────┘
+        ↓                   ↓                   ↓
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Sign with    │   │ Sign with    │   │ Sign with    │
+│ KMS Key      │   │ KMS Key      │   │ KMS Key      │
+└──────────────┘   └──────────────┘   └──────────────┘
+        └───────────────────┼───────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Create Cloud Deploy Release                                     │
+│  Images: springboot:a1b2c3d, fastapi:a1b2c3d, react:a1b2c3d     │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Cloud Deploy → Calls Skaffold                                   │
+│  Skaffold reads: skaffold.yaml + k8s/gcp-deployments.yaml       │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Skaffold Renders Manifests                                      │
+│  Replaces image placeholders with actual SHA tags                │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Apply to GKE Cluster (kubectl apply)                            │
+│  Binary Authorization validates signatures                       │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Rolling Update on GKE                                           │
+│  New pods created → Health checks pass → Old pods terminated     │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+                    ✅ DEPLOYMENT COMPLETE
+```
+
+**Variables Explained**:
+- `$PROJECT_ID`: Your GCP project ID (automatically provided by Cloud Build)
+- `$SHORT_SHA`: First 7 characters of git commit SHA (e.g., "a1b2c3d")
+- `$COMMIT_SHA`: Full git commit SHA
+
+**Why we use $SHORT_SHA for tagging**:
+- Provides traceability (which git commit = which deployment)
+- Enables easy rollback (redeploy previous SHA)
+- Human-readable compared to full SHA
+
+---
+
+### 🔗 How All YAML Files Work Together
+
+Understanding the relationship between these three configuration files is crucial:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         YAML FILES RELATIONSHIP                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  cloudbuild.yaml - "The Orchestrator"                                    │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ • Triggered by: GitHub push                                        │  │
+│  │ • Builds: 3 Docker images                                          │  │
+│  │ • Pushes: Images to Artifact Registry                              │  │
+│  │ • Signs: Images with Binary Authorization                          │  │
+│  │ • Creates: Cloud Deploy release (hands off to next layer)          │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+                    Creates release with image tags
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  clouddeploy.yaml - "The Router"                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ • Defines: Where to deploy (prod target = GKE cluster)            │  │
+│  │ • Manages: Deployment pipeline stages                              │  │
+│  │ • Uses: Skaffold to render and deploy                             │  │
+│  │ • Tracks: Release history and rollbacks                            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+                        Calls Skaffold to render
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  skaffold.yaml - "The Renderer"                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ • Reads: Kubernetes manifests (gcp-deployments.yaml)              │  │
+│  │ • Substitutes: Image placeholders with actual SHA-tagged images   │  │
+│  │ • Applies: Updated manifests to GKE via kubectl                   │  │
+│  │ • Maps: Logical names → Physical registry paths                   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+                    Applies rendered manifests to GKE
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  gcp-deployments.yaml - "The Blueprint" (in k8s/ folder)                 │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ • Defines: Kubernetes resources (Deployments, Services, Ingress)  │  │
+│  │ • Contains: Container specs, networking rules, SSL config         │  │
+│  │ • Updated: By Skaffold with actual image tags during deployment   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Real-World Example**:
+
+When you push code to GitHub, here's what happens:
+
+1. **cloudbuild.yaml** builds `springboot-app:a1b2c3d`, signs it, and tells Cloud Deploy:
+   ```
+   "Deploy release-a1b2c3d with springboot-app:a1b2c3d"
+   ```
+
+2. **clouddeploy.yaml** receives the release and says:
+   ```
+   "Deploy this to the 'prod' target (my-cluster in us-central1-a)"
+   ```
+
+3. **skaffold.yaml** reads your K8s manifests and transforms:
+   ```yaml
+   # Before (in gcp-deployments.yaml):
+   image: us-central1-docker.pkg.dev/.../springboot-app
+   
+   # After (Skaffold substitutes):
+   image: us-central1-docker.pkg.dev/.../springboot-app:a1b2c3d
+   ```
+
+4. **gcp-deployments.yaml** gets applied to GKE with the actual image tags:
+   ```
+   kubectl apply -f gcp-deployments.yaml (with substituted images)
+   ```
+
+**Key Insight**: 
+- You only maintain **ONE** set of Kubernetes manifests (`gcp-deployments.yaml`)
+- Skaffold dynamically updates them for each deployment
+- No manual editing of image tags required
+- Every deployment is traceable via git commit SHA
+
+---
 
 ### 3.4 Register Cloud Deploy Pipeline
 
